@@ -1,0 +1,9 @@
+{
+  "Name": "FarmNet",
+  "Author": "LennyTheFreak",
+  "Version": "0.1.0",
+  "Description": "A pixel-art internet browser inside Stardew Valley.",
+  "UniqueID": "LennyTheFreak.FarmNet",
+  "EntryDll": "FarmNet.dll",
+  "MinimumApiVersion": "4.0.0"
+}
