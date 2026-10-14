@@ -1,4 +1,4 @@
-﻿using StardewModdingAPI;
+using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
 
@@ -6,6 +6,8 @@ namespace FarmNet;
 
 public class ModEntry : Mod
 {
+    private SmartphoneIntegration? phone;
+
     public override void Entry(IModHelper helper)
     {
         Monitor.Log(
@@ -29,6 +31,14 @@ public class ModEntry : Mod
         Monitor.Log(
             "FarmNet is ready.",
             LogLevel.Info);
+
+        // Optional: show up as an app on the Smartphone mod.
+        phone = new SmartphoneIntegration(
+            Helper,
+            Monitor,
+            OpenFarmNet);
+
+        phone.TryRegister();
     }
 
     private void OnButtonPressed(
@@ -39,14 +49,26 @@ public class ModEntry : Mod
             return;
 
         if (e.Button == SButton.F2)
-        {
-            Game1.activeClickableMenu =
-                new FarmNetMenu();
+            OpenFarmNet();
+    }
 
-            Monitor.Log(
-                "FarmNet browser opened.",
-                LogLevel.Info);
-        }
+    /// <summary>
+    /// Single entry point used by both the F2 hotkey and the phone app.
+    /// </summary>
+    private void OpenFarmNet()
+    {
+        if (!Context.IsWorldReady)
+            return;
+
+        if (Game1.activeClickableMenu is FarmNetMenu)
+            return;
+
+        Game1.activeClickableMenu =
+            new FarmNetMenu();
+
+        Monitor.Log(
+            "FarmNet browser opened.",
+            LogLevel.Info);
     }
 
     private void OnMouseWheelScrolled(
