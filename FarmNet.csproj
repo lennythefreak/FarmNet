@@ -1,24 +1,48 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿
+<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFramework>net6.0-windows</TargetFramework>
+	<PropertyGroup>
+		<TargetFramework>net6.0-windows</TargetFramework>
 
-    <RootNamespace>FarmNet</RootNamespace>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
+		<RootNamespace>FarmNet</RootNamespace>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
 
-    <EnableDynamicLoading>true</EnableDynamicLoading>
+		<EnableDynamicLoading>true</EnableDynamicLoading>
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
 
-    <PlatformTarget>x64</PlatformTarget>
-    <CefSharpPlatformTarget>x64</CefSharpPlatformTarget>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-  </PropertyGroup>
+		<PlatformTarget>x64</PlatformTarget>
+		<CefSharpPlatformTarget>x64</CefSharpPlatformTarget>
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+	</PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Pathoschild.Stardew.ModBuildConfig" Version="4.2.1" />
-    <PackageReference Include="CefSharp.OffScreen.NETCore" Version="151.3.240" />
-    <PackageReference Include="System.Drawing.Common" Version="6.0.0" />
-    <PackageReference Include="NAudio" Version="2.2.1" />
-  </ItemGroup>
+	<ItemGroup>
+		<PackageReference Include="Pathoschild.Stardew.ModBuildConfig"
+						  Version="4.2.1" />
+		<PackageReference Include="CefSharp.OffScreen.NETCore"
+						  Version="151.3.240" />
+		<PackageReference Include="System.Drawing.Common"
+						  Version="6.0.0" />
+		<PackageReference Include="NAudio"
+						  Version="2.2.1" />
+		<PackageReference Include="Microsoft.Win32.SystemEvents"
+						  Version="6.0.0" />
+	</ItemGroup>
+
+	<Target Name="CopySystemDrawingCommon" BeforeTargets="AfterBuild">
+		<Copy
+		  SourceFiles="$(NuGetPackageRoot)system.drawing.common\6.0.0\lib\net6.0\System.Drawing.Common.dll"
+		  DestinationFiles="$(TargetDir)System.Drawing.Common.dll"
+		  SkipUnchangedFiles="true"
+		  Condition="Exists('$(NuGetPackageRoot)system.drawing.common\6.0.0\lib\net6.0\System.Drawing.Common.dll')" />
+	</Target>
+
+	<Target Name="CopySystemEventsRuntimeDll" BeforeTargets="AfterBuild">
+		<Copy
+		  SourceFiles="$(NuGetPackageRoot)microsoft.win32.systemevents\6.0.0\runtimes\win\lib\net6.0\Microsoft.Win32.SystemEvents.dll"
+		  DestinationFiles="$(TargetDir)Microsoft.Win32.SystemEvents.dll"
+		  SkipUnchangedFiles="true"
+		  Condition="Exists('$(NuGetPackageRoot)microsoft.win32.systemevents\6.0.0\runtimes\win\lib\net6.0\Microsoft.Win32.SystemEvents.dll')" />
+	</Target>
 
 </Project>
