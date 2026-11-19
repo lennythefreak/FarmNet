@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Threading;
 using CefSharp;
 using CefSharp.Handler;
 using CefSharp.Structs;
@@ -10,6 +11,9 @@ namespace FarmNet;
 public class FarmNetAudioHandler : AudioHandler
 {
     private readonly ConcurrentQueue<byte[]> audioQueue = new();
+
+    private const int MaxQueuedPackets = 100;
+    private int queuedPacketCount;
 
     private readonly object audioLock = new();
 
@@ -205,8 +209,16 @@ public class FarmNetAudioHandler : AudioHandler
              * The Chromium callback NEVER talks
              * directly to NAudio.
              */
-            audioQueue.Enqueue(
-                audioData);
+            audioQueue.Enqueue(audioData);
+            Interlocked.Increment(ref queuedPacketCount);
+
+            while (Volatile.Read(ref queuedPacketCount) > MaxQueuedPackets)
+            {
+                if (audioQueue.TryDequeue(out _))
+                    Interlocked.Decrement(ref queuedPacketCount);
+                else
+                    break;
+            }
 
             PacketCount++;
 
@@ -256,22 +268,25 @@ public class FarmNetAudioHandler : AudioHandler
             errorMessage);
     }
 
-    public bool TryDequeue(
-        out byte[]? audioData)
+    public bool TryDequeue(out byte[]? audioData)
     {
-        return audioQueue.TryDequeue(
-            out audioData);
+        if (audioQueue.TryDequeue(out audioData))
+        {
+            Interlocked.Decrement(ref queuedPacketCount);
+            return true;
+        }
+
+        return false;
     }
 
     public int QueuedPacketCount =>
-        audioQueue.Count;
+        Volatile.Read(ref queuedPacketCount);
 
     private void ClearQueue()
     {
-        while (
-            audioQueue.TryDequeue(
-                out _))
+        while (audioQueue.TryDequeue(out _))
         {
+            Interlocked.Decrement(ref queuedPacketCount);
         }
     }
 

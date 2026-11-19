@@ -1,4 +1,5 @@
-﻿using System;
+﻿
+using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using CefSharp;
@@ -16,6 +17,52 @@ public class ChromiumBrowser : IDisposable
     private FarmNetAudioPlayer? audioPlayer;
 
     private FarmNetMusicDucker? musicDucker;
+
+    private string sessionFilePath = string.Empty;
+
+    private const string DefaultUrl =
+        "https://stardewvalleywiki.com";
+
+    private const string ScrollPersistenceScript = @"
+(function () {
+    try {
+        const key = 'farmnet-scroll:' + window.location.href;
+
+        function saveScroll() {
+            try {
+                localStorage.setItem(key, JSON.stringify({
+                    x: window.scrollX,
+                    y: window.scrollY
+                }));
+            } catch (e) {}
+        }
+
+        const saved = localStorage.getItem(key);
+
+        if (saved) {
+            const position = JSON.parse(saved);
+
+            window.requestAnimationFrame(function () {
+                window.scrollTo(
+                    position.x || 0,
+                    position.y || 0
+                );
+            });
+        }
+
+        let saveTimer;
+
+        window.addEventListener('scroll', function () {
+            clearTimeout(saveTimer);
+
+            saveTimer = setTimeout(saveScroll, 150);
+        }, { passive: true });
+
+        window.addEventListener('beforeunload', saveScroll);
+
+    } catch (e) {}
+})();
+";
 
     public event Action<byte[], int, int>? FrameReady;
 
@@ -42,17 +89,27 @@ public class ChromiumBrowser : IDisposable
     {
         try
         {
+            string farmNetFolder =
+                Path.Combine(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData),
+                    "FarmNet");
+
+            Directory.CreateDirectory(farmNetFolder);
+
+            sessionFilePath =
+                Path.Combine(
+                    farmNetFolder,
+                    "browser-session.txt");
+
             if (!Cef.IsInitialized.GetValueOrDefault())
             {
                 string cachePath =
                     Path.Combine(
-                        Environment.GetFolderPath(
-                            Environment.SpecialFolder.LocalApplicationData),
-                        "FarmNet",
+                        farmNetFolder,
                         "CefCache");
 
-                Directory.CreateDirectory(
-                    cachePath);
+                Directory.CreateDirectory(cachePath);
 
                 CefSettings settings =
                     new CefSettings
@@ -71,9 +128,6 @@ public class ChromiumBrowser : IDisposable
 
                 /*
                  * Keep Chromium audio enabled.
-                 *
-                 * This is what allows YouTube audio
-                 * to reach FarmNetAudioHandler.
                  */
                 settings.EnableAudio();
 
@@ -104,16 +158,9 @@ public class ChromiumBrowser : IDisposable
             audioPlayer =
                 new FarmNetAudioPlayer();
 
-            /*
-             * Stardew music ducking.
-             */
             musicDucker =
                 new FarmNetMusicDucker();
 
-            /*
-             * Store the player's current Stardew
-             * music volume as our normal volume.
-             */
             musicDucker.Initialize();
 
             /*
@@ -122,9 +169,11 @@ public class ChromiumBrowser : IDisposable
              * ----------------------------------------
              */
 
+            string startingUrl =
+                LoadSavedUrl();
+
             browser =
-                new ChromiumWebBrowser(
-                    "https://stardewvalleywiki.com");
+                new ChromiumWebBrowser(startingUrl);
 
             browser.AudioHandler =
                 audioHandler;
@@ -153,16 +202,16 @@ public class ChromiumBrowser : IDisposable
                 "FarmNet: Chromium browser created.");
 
             Console.WriteLine(
-                "FarmNet AUDIO: " +
-                "diagnostic audio handler attached.");
+                $"FarmNet: Restoring session URL: {startingUrl}");
 
             Console.WriteLine(
-                "FarmNet AUDIO: " +
-                "NAudio output prepared.");
+                "FarmNet AUDIO: diagnostic audio handler attached.");
 
             Console.WriteLine(
-                "FarmNet AUDIO: " +
-                "Stardew music ducking enabled.");
+                "FarmNet AUDIO: NAudio output prepared.");
+
+            Console.WriteLine(
+                "FarmNet AUDIO: Stardew music ducking enabled.");
         }
         catch (Exception ex)
         {
@@ -170,6 +219,84 @@ public class ChromiumBrowser : IDisposable
                 $"FarmNet Chromium initialization error: {ex}");
         }
     }
+
+    /*
+     * ----------------------------------------
+     * SESSION STORAGE
+     * ----------------------------------------
+     */
+
+    private string LoadSavedUrl()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(sessionFilePath) ||
+                !File.Exists(sessionFilePath))
+            {
+                return DefaultUrl;
+            }
+
+            string savedUrl =
+                File.ReadAllText(sessionFilePath).Trim();
+
+            if (Uri.TryCreate(
+                    savedUrl,
+                    UriKind.Absolute,
+                    out Uri? uri) &&
+                (uri.Scheme == Uri.UriSchemeHttp ||
+                 uri.Scheme == Uri.UriSchemeHttps))
+            {
+                return savedUrl;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"FarmNet: Could not load browser session: {ex.Message}");
+        }
+
+        return DefaultUrl;
+    }
+
+    private void SaveCurrentUrl()
+    {
+        try
+        {
+            string url =
+                CurrentUrl;
+
+            if (string.IsNullOrWhiteSpace(url))
+                return;
+
+            if (!Uri.TryCreate(
+                    url,
+                    UriKind.Absolute,
+                    out Uri? uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp &&
+                 uri.Scheme != Uri.UriSchemeHttps))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(sessionFilePath))
+                return;
+
+            File.WriteAllText(
+                sessionFilePath,
+                url);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"FarmNet: Could not save browser session: {ex.Message}");
+        }
+    }
+
+    /*
+     * ----------------------------------------
+     * BROWSER EVENTS
+     * ----------------------------------------
+     */
 
     private void OnBrowserInitialized(
         object? sender,
@@ -196,11 +323,8 @@ public class ChromiumBrowser : IDisposable
             return;
         }
 
-        if (e.BufferHandle ==
-            IntPtr.Zero)
-        {
+        if (e.BufferHandle == IntPtr.Zero)
             return;
-        }
 
         try
         {
@@ -238,6 +362,21 @@ public class ChromiumBrowser : IDisposable
         {
             Console.WriteLine(
                 "FarmNet: page finished loading.");
+
+            /*
+             * Restore the saved scroll position
+             * and begin saving future scroll changes.
+             */
+            try
+            {
+                browser?.ExecuteScriptAsync(
+                    ScrollPersistenceScript);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(
+                    $"FarmNet: Scroll restoration error: {ex.Message}");
+            }
         }
     }
 
@@ -247,6 +386,32 @@ public class ChromiumBrowser : IDisposable
     {
         Console.WriteLine(
             $"FarmNet URL changed: {e.Address}");
+
+        /*
+         * Keep the most recently visited page saved.
+         */
+        try
+        {
+            if (Uri.TryCreate(
+                    e.Address,
+                    UriKind.Absolute,
+                    out Uri? uri) &&
+                (uri.Scheme == Uri.UriSchemeHttp ||
+                 uri.Scheme == Uri.UriSchemeHttps))
+            {
+                if (!string.IsNullOrWhiteSpace(sessionFilePath))
+                {
+                    File.WriteAllText(
+                        sessionFilePath,
+                        e.Address);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"FarmNet: Could not save URL: {ex.Message}");
+        }
     }
 
     private void OnLoadError(
@@ -262,13 +427,8 @@ public class ChromiumBrowser : IDisposable
      * ----------------------------------------
      * AUDIO PROCESSING
      * ----------------------------------------
-     *
-     * This runs from Stardew's normal update
-     * loop.
-     *
-     * Chromium's audio callback NEVER talks
-     * directly to NAudio.
      */
+
     public void ProcessAudio()
     {
         if (audioHandler == null ||
@@ -278,45 +438,21 @@ public class ChromiumBrowser : IDisposable
             return;
         }
 
-        /*
-         * ----------------------------------------
-         * MUSIC DUCKING
-         * ----------------------------------------
-         *
-         * Active browser audio:
-         *
-         * Stardew music → 15%
-         *
-         * No browser audio:
-         *
-         * Stardew music → normal volume
-         */
         bool browserAudioActive =
             audioHandler.AudioStreamActive;
 
         musicDucker.SetBrowserAudioActive(
             browserAudioActive);
 
-        /*
-         * Stardew normally updates around 60 FPS,
-         * so this gives us a smooth fade.
-         */
         musicDucker.Update(
             1f / 60f);
 
-        /*
-         * Nothing left to send to NAudio.
-         */
         if (!audioHandler.AudioStreamActive &&
             audioHandler.QueuedPacketCount == 0)
         {
             return;
         }
 
-        /*
-         * Start the Windows audio output when
-         * Chromium starts sending audio.
-         */
         if (!audioPlayer.IsPlaying)
         {
             audioPlayer.Start(
@@ -324,15 +460,11 @@ public class ChromiumBrowser : IDisposable
                 audioHandler.Channels);
         }
 
-        /*
-         * Move a limited number of packets from
-         * the Chromium queue into NAudio each
-         * Stardew frame.
-         */
         int packetsProcessed =
             0;
 
         while (
+            audioPlayer.BufferedSeconds < 0.5 &&
             audioHandler.TryDequeue(
                 out byte[]? audioData))
         {
@@ -344,10 +476,6 @@ public class ChromiumBrowser : IDisposable
 
             packetsProcessed++;
 
-            /*
-             * Prevent an enormous backlog from
-             * consuming one Stardew frame.
-             */
             if (packetsProcessed >= 20)
                 break;
         }
@@ -369,9 +497,7 @@ public class ChromiumBrowser : IDisposable
         }
 
         if (string.IsNullOrWhiteSpace(url))
-        {
             return;
-        }
 
         url =
             url.Trim();
@@ -399,9 +525,7 @@ public class ChromiumBrowser : IDisposable
         }
 
         if (browser.CanGoBack)
-        {
             browser.Back();
-        }
     }
 
     public void GoForward()
@@ -413,9 +537,7 @@ public class ChromiumBrowser : IDisposable
         }
 
         if (browser.CanGoForward)
-        {
             browser.Forward();
-        }
     }
 
     public void Reload()
@@ -438,8 +560,17 @@ public class ChromiumBrowser : IDisposable
     public void Dispose()
     {
         /*
-         * Immediately restore Stardew's music
-         * before destroying the browser.
+         * Save the last visited URL before
+         * destroying the browser.
+         *
+         * Scroll position is saved by Chromium's
+         * JavaScript scroll listener.
+         */
+        SaveCurrentUrl();
+
+        /*
+         * Restore Stardew's music before
+         * destroying the browser.
          */
         musicDucker?.Restore();
 
@@ -486,3 +617,4 @@ public class ChromiumBrowser : IDisposable
             null;
     }
 }
+

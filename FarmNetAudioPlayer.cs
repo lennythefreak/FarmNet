@@ -15,14 +15,23 @@ public class FarmNetAudioPlayer : IDisposable
     private bool initialized;
 
     public bool IsPlaying =>
-        output != null;
+        output != null &&
+        output.PlaybackState == PlaybackState.Playing;
+
+    public double BufferedSeconds =>
+        buffer == null
+            ? 0
+            : buffer.BufferedBytes / (double)buffer.WaveFormat.AverageBytesPerSecond;
 
     public void Start(
         int sampleRate,
         int channels)
     {
-        if (initialized)
+        if (output != null && output.PlaybackState == PlaybackState.Playing)
             return;
+
+        if (initialized || output != null)
+            Stop();
 
         if (sampleRate <= 0)
             return;
@@ -58,7 +67,7 @@ public class FarmNetAudioPlayer : IDisposable
             TimeSpan.FromSeconds(2);
 
         buffer.ReadFully =
-            false;
+            true;
 
         output =
             new WaveOutEvent();
@@ -90,16 +99,20 @@ public class FarmNetAudioPlayer : IDisposable
 
         try
         {
-            buffer.AddSamples(
-                data,
-                0,
-                data.Length);
+            if (data.Length > buffer.BufferLength)
+                return;
+
+            // Discard old buffered audio rather than allowing
+            // a backlog to permanently fill the output.
+            if (buffer.BufferedBytes + data.Length > buffer.BufferLength)
+                buffer.ClearBuffer();
+
+            buffer.AddSamples(data, 0, data.Length);
         }
         catch (Exception ex)
         {
             Console.WriteLine(
-                $"FarmNet AUDIO: " +
-                $"Output buffer error: {ex}");
+                $"FarmNet AUDIO: Output buffer error: {ex.Message}");
         }
     }
 
@@ -136,3 +149,4 @@ public class FarmNetAudioPlayer : IDisposable
         Stop();
     }
 }
+

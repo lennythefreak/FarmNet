@@ -1,4 +1,4 @@
-﻿
+
 using CefSharp;
 using Microsoft.VisualBasic.Devices;
 using Microsoft.Xna.Framework;
@@ -38,7 +38,17 @@ public class FarmNetMenu : IClickableMenu
     private Rectangle reloadButton;
     private Rectangle favoriteButton;
     private Rectangle themeButton;
+    private Rectangle saveBookmarkButton;
+    private Rectangle listBookmarksButton;
     private Rectangle addressBar;
+
+    private readonly FarmNetBookmarks bookmarks;
+
+    private bool bookmarkPanelOpen;
+    private int bookmarkScrollOffset;
+
+    private Rectangle bookmarkPanelBounds;
+    private Rectangle bookmarkCloseButton;
     private Rectangle closeButton;
 
     private bool addressBarFocused;
@@ -83,6 +93,9 @@ public class FarmNetMenu : IClickableMenu
             Game1.viewport.Height,
             true)
     {
+        bookmarks =
+            new FarmNetBookmarks();
+
         chromiumBrowser =
             new ChromiumBrowser();
 
@@ -575,6 +588,24 @@ public class FarmNetMenu : IClickableMenu
                 navButtonWidth,
                 navButtonHeight);
 
+        int saveBookmarkWidth = 140;
+        int listBookmarksWidth = 170;
+        int bookmarkButtonGap = 8;
+
+        listBookmarksButton =
+            new Rectangle(
+                windowX + windowWidth - 20 - listBookmarksWidth,
+                navY,
+                listBookmarksWidth,
+                navButtonHeight);
+
+        saveBookmarkButton =
+            new Rectangle(
+                listBookmarksButton.X - bookmarkButtonGap - saveBookmarkWidth,
+                navY,
+                saveBookmarkWidth,
+                navButtonHeight);
+
         DrawNavigationButton(
             b,
             backButton);
@@ -594,6 +625,14 @@ public class FarmNetMenu : IClickableMenu
         DrawNavigationButton(
             b,
             themeButton);
+
+        DrawNavigationButton(
+            b,
+            saveBookmarkButton);
+
+        DrawNavigationButton(
+            b,
+            listBookmarksButton);
 
         DrawBackIcon(
             b,
@@ -615,23 +654,34 @@ public class FarmNetMenu : IClickableMenu
             b,
             themeButton);
 
-        if (chromiumBrowser.IsLoading)
-        {
-            b.DrawString(
-                Game1.smallFont,
-                "LOADING...",
-                new Vector2(
-                    windowX +
-                    windowWidth -
-                    140,
-                    navY + 10),
-                darkTheme
-                    ? Color.White
-                    : new Color(
-                        74,
-                        57,
-                        40));
-        }
+        string saveLabel = "SAVE PAGE";
+        Vector2 saveLabelSize =
+            Game1.smallFont.MeasureString(saveLabel);
+
+        b.DrawString(
+            Game1.smallFont,
+            saveLabel,
+            new Vector2(
+                saveBookmarkButton.X +
+                (saveBookmarkButton.Width - saveLabelSize.X) / 2,
+                saveBookmarkButton.Y +
+                (saveBookmarkButton.Height - saveLabelSize.Y) / 2),
+            darkTheme ? Color.White : new Color(74, 57, 40));
+
+        string listLabel = "BOOKMARKS";
+        Vector2 listLabelSize =
+            Game1.smallFont.MeasureString(listLabel);
+
+        b.DrawString(
+            Game1.smallFont,
+            listLabel,
+            new Vector2(
+                listBookmarksButton.X +
+                (listBookmarksButton.Width - listLabelSize.X) / 2,
+                listBookmarksButton.Y +
+                (listBookmarksButton.Height - listLabelSize.Y) / 2),
+            darkTheme ? Color.White : new Color(74, 57, 40));
+
 
         // -----------------------------------------------------
         // BROWSER
@@ -642,15 +692,21 @@ public class FarmNetMenu : IClickableMenu
             navButtonHeight +
             10;
 
+        int statusBarHeight = 32;
+
+        Rectangle statusBar =
+            new Rectangle(
+                windowX + 20,
+                windowY + windowHeight - 48,
+                windowWidth - 40,
+                statusBarHeight);
+
         browserArea =
             new Rectangle(
                 windowX + 20,
                 browserTop,
                 windowWidth - 40,
-                windowY +
-                windowHeight -
-                browserTop -
-                20);
+                statusBar.Y - browserTop - 8);
 
         b.Draw(
             Game1.staminaRect,
@@ -701,7 +757,316 @@ public class FarmNetMenu : IClickableMenu
                         165));
         }
 
+        // -----------------------------------------------------
+        // STATUS BAR
+        // -----------------------------------------------------
+
+        Color statusBackground =
+            darkTheme
+                ? new Color(32, 32, 35)
+                : new Color(218, 202, 172);
+
+        Color statusText =
+            darkTheme
+                ? new Color(220, 220, 220)
+                : new Color(74, 57, 40);
+
+        b.Draw(
+            Game1.staminaRect,
+            statusBar,
+            statusBackground);
+
+        b.Draw(
+            Game1.staminaRect,
+            new Rectangle(
+                statusBar.X,
+                statusBar.Y,
+                statusBar.Width,
+                2),
+            darkTheme
+                ? new Color(65, 65, 70)
+                : new Color(190, 170, 137));
+
+        string clockText =
+            DateTime.Now.ToString("dddd, MMMM d yyyy  h:mm:ss tt");
+
+        Vector2 clockSize =
+            Game1.smallFont.MeasureString(clockText);
+
+        b.DrawString(
+            Game1.smallFont,
+            clockText,
+            new Vector2(
+                statusBar.X + 12,
+                statusBar.Y +
+                (statusBar.Height - clockSize.Y) / 2),
+            statusText);
+
+        string statusTextValue =
+            chromiumBrowser.IsLoading
+                ? "LOADING..."
+                : "READY";
+
+        Vector2 statusTextSize =
+            Game1.smallFont.MeasureString(statusTextValue);
+
+        b.DrawString(
+            Game1.smallFont,
+            statusTextValue,
+            new Vector2(
+                statusBar.Right - statusTextSize.X - 12,
+                statusBar.Y +
+                (statusBar.Height - statusTextSize.Y) / 2),
+            statusText);
+
+        if (bookmarkPanelOpen)
+        {
+            DrawBookmarkPanel(b);
+        }
+
         drawMouse(b);
+    }
+
+    // =========================================================
+    // BOOKMARK PANEL
+    // =========================================================
+
+    private void DrawBookmarkPanel(SpriteBatch b)
+    {
+        int panelWidth = Math.Min(560, browserArea.Width - 40);
+        int panelHeight = Math.Min(460, browserArea.Height - 40);
+
+        panelWidth = Math.Max(260, panelWidth);
+        panelHeight = Math.Max(180, panelHeight);
+
+        bookmarkPanelBounds = new Rectangle(
+            browserArea.X + (browserArea.Width - panelWidth) / 2,
+            browserArea.Y + (browserArea.Height - panelHeight) / 2,
+            panelWidth,
+            panelHeight);
+
+        b.Draw(
+            Game1.staminaRect,
+            bookmarkPanelBounds,
+            darkTheme
+                ? new Color(30, 30, 33)
+                : new Color(238, 222, 190));
+
+        b.DrawString(
+            Game1.smallFont,
+            "FARMNET BOOKMARKS",
+            new Vector2(
+                bookmarkPanelBounds.X + 16,
+                bookmarkPanelBounds.Y + 14),
+            darkTheme ? Color.White : new Color(74, 57, 40));
+
+        bookmarkCloseButton = new Rectangle(
+            bookmarkPanelBounds.Right - 36,
+            bookmarkPanelBounds.Y + 8,
+            28,
+            28);
+
+        b.Draw(
+            Game1.staminaRect,
+            bookmarkCloseButton,
+            darkTheme
+                ? new Color(75, 45, 45)
+                : new Color(190, 130, 105));
+
+        b.DrawString(
+            Game1.smallFont,
+            "X",
+            new Vector2(
+                bookmarkCloseButton.X + 9,
+                bookmarkCloseButton.Y + 5),
+            Color.White);
+
+        int rowHeight = 42;
+        int firstRowY = bookmarkPanelBounds.Y + 52;
+        int visibleRows = Math.Max(
+            0,
+            (bookmarkPanelBounds.Height - 64) / rowHeight);
+
+        if (bookmarks.All.Count == 0)
+        {
+            Color messageColor =
+                darkTheme ? Color.White : new Color(74, 57, 40);
+
+            b.DrawString(
+                Game1.smallFont,
+                "No bookmarks yet.",
+                new Vector2(
+                    bookmarkPanelBounds.X + 16,
+                    firstRowY + 8),
+                messageColor);
+
+            b.DrawString(
+                Game1.smallFont,
+                "Press SAVE PAGE on a",
+                new Vector2(
+                    bookmarkPanelBounds.X + 16,
+                    firstRowY + 30),
+                messageColor);
+
+            b.DrawString(
+                Game1.smallFont,
+                "page to keep it.",
+                new Vector2(
+                    bookmarkPanelBounds.X + 16,
+                    firstRowY + 52),
+                messageColor);
+
+            return;
+        }
+
+        for (int i = 0; i < visibleRows; i++)
+        {
+            int index = bookmarkScrollOffset + i;
+
+            if (index >= bookmarks.All.Count)
+                break;
+
+            string url = bookmarks.All[index];
+
+            Rectangle row = new Rectangle(
+                bookmarkPanelBounds.X + 12,
+                firstRowY + i * rowHeight,
+                bookmarkPanelBounds.Width - 24,
+                rowHeight - 4);
+
+            b.Draw(
+                Game1.staminaRect,
+                row,
+                darkTheme
+                    ? new Color(48, 48, 52)
+                    : new Color(220, 203, 169));
+
+            Rectangle removeButton = new Rectangle(
+                row.Right - 38,
+                row.Y + 4,
+                32,
+                row.Height - 8);
+
+            b.Draw(
+                Game1.staminaRect,
+                removeButton,
+                darkTheme
+                    ? new Color(85, 45, 45)
+                    : new Color(180, 115, 95));
+
+            b.DrawString(
+                Game1.smallFont,
+                "X",
+                new Vector2(
+                    removeButton.X + 10,
+                    removeButton.Y + 3),
+                Color.White);
+
+            string displayUrl = url;
+
+            while (
+                displayUrl.Length > 0 &&
+                Game1.smallFont.MeasureString(displayUrl).X >
+                row.Width - 60)
+            {
+                displayUrl = displayUrl.Substring(
+                    0,
+                    displayUrl.Length - 1);
+            }
+
+            if (displayUrl.Length < url.Length)
+                displayUrl += "...";
+
+            b.DrawString(
+                Game1.smallFont,
+                displayUrl,
+                new Vector2(row.X + 10, row.Y + 7),
+                darkTheme ? Color.White : new Color(74, 57, 40));
+        }
+
+        if (bookmarks.All.Count > visibleRows)
+        {
+            b.DrawString(
+                Game1.smallFont,
+                "Use mouse wheel to scroll",
+                new Vector2(
+                    bookmarkPanelBounds.X + 16,
+                    bookmarkPanelBounds.Bottom - 24),
+                darkTheme
+                    ? new Color(190, 190, 190)
+                    : new Color(100, 85, 65));
+        }
+    }
+
+    private bool HandleBookmarkPanelClick(int x, int y)
+    {
+        if (!bookmarkPanelBounds.Contains(x, y))
+        {
+            bookmarkPanelOpen = false;
+            return false;
+        }
+
+        if (bookmarkCloseButton.Contains(x, y))
+        {
+            bookmarkPanelOpen = false;
+            return true;
+        }
+
+        int rowHeight = 42;
+        int firstRowY = bookmarkPanelBounds.Y + 52;
+        int visibleRows = Math.Max(
+            0,
+            (bookmarkPanelBounds.Height - 64) / rowHeight);
+
+        for (int i = 0; i < visibleRows; i++)
+        {
+            int index = bookmarkScrollOffset + i;
+
+            if (index >= bookmarks.All.Count)
+                break;
+
+            Rectangle row = new Rectangle(
+                bookmarkPanelBounds.X + 12,
+                firstRowY + i * rowHeight,
+                bookmarkPanelBounds.Width - 24,
+                rowHeight - 4);
+
+            if (!row.Contains(x, y))
+                continue;
+
+            string url = bookmarks.All[index];
+
+            Rectangle removeButton = new Rectangle(
+                row.Right - 38,
+                row.Y + 4,
+                32,
+                row.Height - 8);
+
+            if (removeButton.Contains(x, y))
+            {
+                bookmarks.Remove(url);
+
+                int maxOffset = Math.Max(
+                    0,
+                    bookmarks.All.Count - visibleRows);
+
+                bookmarkScrollOffset = Math.Min(
+                    bookmarkScrollOffset,
+                    maxOffset);
+
+                return true;
+            }
+
+            addressBarFocused = false;
+            keyboardSubscriber.EndAddressBar();
+            addressText = url;
+            chromiumBrowser.Navigate(url);
+            bookmarkPanelOpen = false;
+
+            return true;
+        }
+
+        return true;
     }
 
     // =========================================================
@@ -1270,6 +1635,12 @@ public class FarmNetMenu : IClickableMenu
             return;
         }
 
+        if (bookmarkPanelOpen &&
+            HandleBookmarkPanelClick(x, y))
+        {
+            return;
+        }
+
         // BACK
 
         if (backButton.Contains(
@@ -1347,6 +1718,25 @@ public class FarmNetMenu : IClickableMenu
             darkTheme =
                 !darkTheme;
 
+            return;
+        }
+
+        // SAVE BOOKMARK
+
+        if (saveBookmarkButton.Contains(x, y))
+        {
+            bookmarks.Add(chromiumBrowser.CurrentUrl ?? string.Empty);
+            return;
+        }
+
+        // BOOKMARK LIST
+
+        if (listBookmarksButton.Contains(x, y))
+        {
+            bookmarkPanelOpen = !bookmarkPanelOpen;
+            bookmarkScrollOffset = 0;
+            addressBarFocused = false;
+            keyboardSubscriber.EndAddressBar();
             return;
         }
 
@@ -1502,14 +1892,35 @@ public class FarmNetMenu : IClickableMenu
     public void HandleMouseWheel(
         int delta)
     {
-        if (!chromiumBrowser.IsReady)
-            return;
-
         int mouseX =
             Game1.getMouseX();
 
         int mouseY =
             Game1.getMouseY();
+
+        if (bookmarkPanelOpen &&
+            bookmarkPanelBounds.Contains(mouseX, mouseY))
+        {
+            int rowHeight = 42;
+            int visibleRows = Math.Max(
+                0,
+                (bookmarkPanelBounds.Height - 64) / rowHeight);
+
+            int maxOffset = Math.Max(
+                0,
+                bookmarks.All.Count - visibleRows);
+
+            bookmarkScrollOffset = Math.Max(
+                0,
+                Math.Min(
+                    maxOffset,
+                    bookmarkScrollOffset - Math.Sign(delta)));
+
+            return;
+        }
+
+        if (!chromiumBrowser.IsReady)
+            return;
 
         if (!browserArea.Contains(
                 mouseX,
@@ -1586,4 +1997,5 @@ public class FarmNetMenu : IClickableMenu
         base.cleanupBeforeExit();
     }
 }
+
 
