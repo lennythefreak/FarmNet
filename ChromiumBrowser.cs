@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -491,6 +491,31 @@ public class ChromiumBrowser : IDisposable
      * AUDIO PROCESSING
      * ----------------------------------------
      */
+
+    public void Resize(
+        int width,
+        int height)
+    {
+        if (browser == null ||
+            width <= 0 ||
+            height <= 0)
+        {
+            return;
+        }
+
+        var newSize =
+            new System.Drawing.Size(width, height);
+
+        if (browser.Size == newSize)
+            return;
+
+        browser.Size = newSize;
+
+        if (browser.IsBrowserInitialized)
+        {
+            browser.GetBrowserHost()?.WasResized();
+        }
+    }
 
     public void ProcessAudio()
     {

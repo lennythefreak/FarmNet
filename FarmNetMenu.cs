@@ -1,4 +1,4 @@
-﻿
+
 using CefSharp;
 using Microsoft.VisualBasic.Devices;
 using Microsoft.Xna.Framework;
@@ -8,6 +8,9 @@ using StardewValley;
 using StardewValley.Menus;
 
 using System;
+using System.Text.RegularExpressions;
+using System.Linq;
+using System.IO;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Windows.Forms;
@@ -19,6 +22,7 @@ public class FarmNetMenu : IClickableMenu
     private readonly FarmNetBrowserAudioManager audioManager;
 
     private readonly List<FarmNetBrowserTab> tabs = new();
+private readonly List<string> tabSessionFiles = new();
 
     private int selectedTabIndex;
     private int nextTabId = 1;
@@ -103,6 +107,18 @@ public class FarmNetMenu : IClickableMenu
     private int windowWidth;
     private int windowHeight;
 
+    private bool windowInitialized;
+    private bool resizingWindow;
+    private bool movingWindow;
+
+    private int moveOffsetX;
+    private int moveOffsetY;
+
+    private int resizeStartMouseX;
+    private int resizeStartMouseY;
+    private int resizeStartWidth;
+    private int resizeStartHeight;
+
     // =========================================================
     // CONSTRUCTOR
     // =========================================================
@@ -121,12 +137,144 @@ public class FarmNetMenu : IClickableMenu
         audioManager =
             new FarmNetBrowserAudioManager();
 
-        AddTab();
+        RestoreTabs();
     }
 
     // =========================================================
     // TAB MANAGEMENT
     // =========================================================
+
+    private static string GetSessionFolder()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+            "FarmNet");
+    }
+
+    private static string GetOpenTabsManifestPath()
+    {
+        return Path.Combine(
+            GetSessionFolder(),
+            "browser-tabs.txt");
+    }
+
+    private static bool IsValidSessionFileName(string fileName)
+    {
+        return !string.IsNullOrWhiteSpace(fileName)
+            && Path.GetFileName(fileName) == fileName
+            && Regex.IsMatch(
+                fileName,
+                @"^browser-session(?:-tab-\d+)?\.txt$");
+    }
+
+    private void SaveOpenTabs()
+    {
+        try
+        {
+            string folder = GetSessionFolder();
+
+            Directory.CreateDirectory(folder);
+
+            File.WriteAllLines(
+                GetOpenTabsManifestPath(),
+                tabSessionFiles);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "FarmNet could not save its open-tab list: " + ex);
+        }
+    }
+
+    private void RestoreTabs()
+    {
+        string folder = GetSessionFolder();
+
+        Directory.CreateDirectory(folder);
+
+        string manifestPath =
+            GetOpenTabsManifestPath();
+
+        List<string> sessionFiles = new();
+
+        // First, use the manifest if one already exists.
+        if (File.Exists(manifestPath))
+        {
+            foreach (string line in File.ReadAllLines(manifestPath))
+            {
+                string fileName = line.Trim();
+
+                if (!IsValidSessionFileName(fileName))
+                    continue;
+
+                string fullPath =
+                    Path.Combine(folder, fileName);
+
+                if (!File.Exists(fullPath))
+                    continue;
+
+                if (!sessionFiles.Contains(
+                    fileName,
+                    StringComparer.OrdinalIgnoreCase))
+                {
+                    sessionFiles.Add(fileName);
+                }
+            }
+        }
+
+        // First-run migration: only discover old sessions when
+// no manifest exists. An empty manifest means all tabs
+// were intentionally closed.
+        if (!File.Exists(manifestPath))
+        {
+            sessionFiles =
+                Directory.GetFiles(
+                    folder,
+                    "browser-session*.txt")
+                .Select(path => Path.GetFileName(path)!)
+                .Where(name => IsValidSessionFileName(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name =>
+                    name == "browser-session.txt" ? 0 : 1)
+                .ThenBy(name =>
+                {
+                    Match match =
+                        Regex.Match(name, @"-tab-(\d+)\.txt$");
+
+                    return match.Success
+                        ? int.Parse(match.Groups[1].Value)
+                        : 0;
+                })
+                .ToList();
+        }
+
+        // Nothing saved yet: start with the normal default tab.
+        if (sessionFiles.Count == 0)
+        {
+            AddTab();
+            return;
+        }
+
+        // Create each browser using its existing URL session file.
+        foreach (string sessionFileName in sessionFiles)
+        {
+            AddTab(
+                sessionFileName,
+                persistTabs: false);
+        }
+
+        // Start with the first restored tab selected.
+        selectedTabIndex = 0;
+
+        Game1.keyboardDispatcher.Subscriber =
+            tabs[0].KeyboardSubscriber;
+
+        addressText =
+            tabs[0].CurrentUrl ?? string.Empty;
+
+        SaveOpenTabs();
+    }
 
     private void OnPopupRequested(string url)
     {
@@ -151,7 +299,9 @@ public class FarmNetMenu : IClickableMenu
             chromiumBrowser.Navigate(url);
         }
     }
-    private void AddTab()
+    private void AddTab(
+        string? requestedSessionFileName = null,
+        bool persistTabs = true)
     {
         if (tabs.Count > 0)
         {
@@ -159,10 +309,42 @@ public class FarmNetMenu : IClickableMenu
             ActiveTab.KeyboardSubscriber.EndAddressBar();
         }
 
-        string sessionFileName =
-            tabs.Count == 0
-                ? "browser-session.txt"
-                : $"browser-session-tab-{nextTabId++}.txt";
+        string sessionFileName;
+
+        if (!string.IsNullOrWhiteSpace(requestedSessionFileName))
+        {
+            sessionFileName = requestedSessionFileName;
+
+            Match restoredMatch =
+                Regex.Match(
+                    sessionFileName,
+                    @"-tab-(\d+)\.txt$");
+
+            if (restoredMatch.Success)
+            {
+                nextTabId = Math.Max(
+                    nextTabId,
+                    int.Parse(restoredMatch.Groups[1].Value) + 1);
+            }
+        }
+        else if (tabs.Count == 0 &&
+                 !tabSessionFiles.Contains(
+                     "browser-session.txt",
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            sessionFileName = "browser-session.txt";
+        }
+        else
+        {
+            do
+            {
+                sessionFileName =
+                    $"browser-session-tab-{nextTabId++}.txt";
+            }
+            while (tabSessionFiles.Contains(
+                sessionFileName,
+                StringComparer.OrdinalIgnoreCase));
+        }
 
         FarmNetBrowserTab tab =
             new FarmNetBrowserTab(
@@ -172,6 +354,7 @@ public class FarmNetMenu : IClickableMenu
                 OnPopupRequested);
 
         tabs.Add(tab);
+        tabSessionFiles.Add(sessionFileName);
 
         selectedTabIndex =
             tabs.Count - 1;
@@ -186,6 +369,11 @@ public class FarmNetMenu : IClickableMenu
             string.IsNullOrWhiteSpace(tab.CurrentUrl)
                 ? string.Empty
                 : tab.CurrentUrl;
+
+        if (persistTabs)
+        {
+            SaveOpenTabs();
+        }
     }
 
     private void SwitchTab(int index)
@@ -226,6 +414,9 @@ public class FarmNetMenu : IClickableMenu
         FarmNetBrowserTab closingTab =
             tabs[index];
 
+        string closingSessionFileName =
+            tabSessionFiles[index];
+
         if (closingActiveTab)
         {
             closingTab.DeactivateAudio();
@@ -240,8 +431,29 @@ public class FarmNetMenu : IClickableMenu
             Game1.keyboardDispatcher.Subscriber = null;
         }
 
+        // Dispose first so the final URL is saved before deletion.
         closingTab.Dispose();
+
         tabs.RemoveAt(index);
+        tabSessionFiles.RemoveAt(index);
+
+        try
+        {
+            string sessionPath =
+                Path.Combine(
+                    GetSessionFolder(),
+                    closingSessionFileName);
+
+            if (File.Exists(sessionPath))
+                File.Delete(sessionPath);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                "FarmNet could not delete a closed tab session: " + ex);
+        }
+
+        SaveOpenTabs();
 
         if (tabs.Count == 0)
         {
@@ -371,23 +583,46 @@ public class FarmNetMenu : IClickableMenu
 
     private void CalculateWindow()
     {
+        int maxWidth =
+            Math.Max(1, Game1.viewport.Width - 20);
+
+        int maxHeight =
+            Math.Max(1, Game1.viewport.Height - 20);
+
+        if (!windowInitialized)
+        {
+            windowWidth =
+                Math.Min(1300, maxWidth);
+
+            windowHeight =
+                Math.Min(820, maxHeight);
+
+            windowX =
+                (Game1.viewport.Width - windowWidth) / 2;
+
+            windowY =
+                (Game1.viewport.Height - windowHeight) / 2;
+
+            windowInitialized = true;
+        }
+
         windowWidth =
-            Math.Min(
-                1300,
-                Game1.viewport.Width - 50);
+            Math.Clamp(windowWidth, 1, maxWidth);
 
         windowHeight =
-            Math.Min(
-                820,
-                Game1.viewport.Height - 35);
+            Math.Clamp(windowHeight, 1, maxHeight);
 
         windowX =
-            (Game1.viewport.Width -
-             windowWidth) / 2;
+            Math.Clamp(
+                windowX,
+                0,
+                Math.Max(0, Game1.viewport.Width - windowWidth));
 
         windowY =
-            (Game1.viewport.Height -
-             windowHeight) / 2;
+            Math.Clamp(
+                windowY,
+                0,
+                Math.Max(0, Game1.viewport.Height - windowHeight));
     }
 
     // =========================================================
@@ -947,6 +1182,17 @@ public class FarmNetMenu : IClickableMenu
                 browserTop,
                 windowWidth - 40,
                 statusBar.Y - browserTop - 8);
+
+        chromiumBrowser.Resize(
+            browserArea.Width,
+            browserArea.Height);
+
+        Rectangle resizeGrip =
+            new Rectangle(
+                windowX + windowWidth - 18,
+                windowY + windowHeight - 18,
+                18,
+                18);
 
         b.Draw(
             Game1.staminaRect,
@@ -1875,6 +2121,45 @@ public class FarmNetMenu : IClickableMenu
             return;
         }
 
+        Rectangle resizeGrip =
+            new Rectangle(
+                windowX + windowWidth - 24,
+                windowY + windowHeight - 24,
+                24,
+                24);
+
+        if (resizeGrip.Contains(x, y))
+        {
+            resizingWindow = true;
+
+            resizeStartMouseX = x;
+            resizeStartMouseY = y;
+
+            resizeStartWidth = windowWidth;
+            resizeStartHeight = windowHeight;
+
+            chromiumLeftMouseDown = false;
+            return;
+        }
+
+        Rectangle titleBarHitbox =
+            new Rectangle(
+                windowX,
+                windowY,
+                windowWidth,
+                50);
+
+        if (titleBarHitbox.Contains(x, y))
+        {
+            movingWindow = true;
+
+            moveOffsetX = x - windowX;
+            moveOffsetY = y - windowY;
+
+            chromiumLeftMouseDown = false;
+            return;
+        }
+
         if (bookmarkPanelOpen &&
             HandleBookmarkPanelClick(x, y))
         {
@@ -2045,6 +2330,59 @@ public class FarmNetMenu : IClickableMenu
     }
 
     // =========================================================
+    // WINDOW RESIZING
+    // =========================================================
+
+    public override void leftClickHeld(
+        int x,
+        int y)
+    {
+        if (movingWindow)
+        {
+            windowX =
+                Math.Clamp(
+                    x - moveOffsetX,
+                    0,
+                    Math.Max(0, Game1.viewport.Width - windowWidth));
+
+            windowY =
+                Math.Clamp(
+                    y - moveOffsetY,
+                    0,
+                    Math.Max(0, Game1.viewport.Height - windowHeight));
+
+            return;
+        }
+
+        if (!resizingWindow)
+            return;
+
+        int maxWidth =
+            Math.Max(1, Game1.viewport.Width - windowX - 10);
+
+        int maxHeight =
+            Math.Max(1, Game1.viewport.Height - windowY - 10);
+
+        int minWidth =
+            Math.Min(650, maxWidth);
+
+        int minHeight =
+            Math.Min(420, maxHeight);
+
+        windowWidth =
+            Math.Clamp(
+                resizeStartWidth + x - resizeStartMouseX,
+                minWidth,
+                maxWidth);
+
+        windowHeight =
+            Math.Clamp(
+                resizeStartHeight + y - resizeStartMouseY,
+                minHeight,
+                maxHeight);
+    }
+
+    // =========================================================
     // MOUSE DOWN
     // =========================================================
 
@@ -2092,6 +2430,9 @@ public class FarmNetMenu : IClickableMenu
         int x,
         int y)
     {
+        resizingWindow = false;
+        movingWindow = false;
+
         if (chromiumLeftMouseDown)
         {
             SendMouseUp(
@@ -2220,7 +2561,9 @@ public class FarmNetMenu : IClickableMenu
 
     protected override void cleanupBeforeExit()
     {
-        /*
+                SaveOpenTabs();
+
+/*
          * Remove the active FarmNet keyboard subscriber.
          */
 
@@ -2247,6 +2590,7 @@ public class FarmNetMenu : IClickableMenu
         }
 
         tabs.Clear();
+        tabSessionFiles.Clear();
 
         chromiumLeftMouseDown =
             false;
