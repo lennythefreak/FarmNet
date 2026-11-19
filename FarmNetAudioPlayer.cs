@@ -116,6 +116,18 @@ public class FarmNetAudioPlayer : IDisposable
         }
     }
 
+    public void ClearBuffer()
+    {
+        try
+        {
+            buffer?.ClearBuffer();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"FarmNet AUDIO: Could not clear output buffer: {ex.Message}");
+        }
+    }
     public void Stop()
     {
         if (!initialized)
@@ -149,4 +161,5 @@ public class FarmNetAudioPlayer : IDisposable
         Stop();
     }
 }
+
 

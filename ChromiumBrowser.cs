@@ -14,11 +14,13 @@ public class ChromiumBrowser : IDisposable
 
     private FarmNetAudioHandler? audioHandler;
 
-    private FarmNetAudioPlayer? audioPlayer;
+    private FarmNetBrowserAudioManager? audioManager;
 
-    private FarmNetMusicDucker? musicDucker;
+    private bool ownsAudioManager;
 
     private string sessionFilePath = string.Empty;
+
+    private readonly string sessionFileName;
 
     private const string DefaultUrl =
         "https://stardewvalleywiki.com";
@@ -82,6 +84,35 @@ public class ChromiumBrowser : IDisposable
 
     public ChromiumBrowser()
     {
+        sessionFileName =
+            "browser-session.txt";
+
+        audioManager =
+            new FarmNetBrowserAudioManager();
+
+        ownsAudioManager =
+            true;
+
+        Initialize();
+    }
+
+    public ChromiumBrowser(
+        FarmNetBrowserAudioManager sharedAudioManager,
+        string sessionFileName = "browser-session.txt")
+    {
+        this.sessionFileName =
+            string.IsNullOrWhiteSpace(sessionFileName)
+                ? "browser-session.txt"
+                : Path.GetFileName(sessionFileName);
+
+        audioManager =
+            sharedAudioManager ??
+            throw new ArgumentNullException(
+                nameof(sharedAudioManager));
+
+        ownsAudioManager =
+            false;
+
         Initialize();
     }
 
@@ -100,7 +131,7 @@ public class ChromiumBrowser : IDisposable
             sessionFilePath =
                 Path.Combine(
                     farmNetFolder,
-                    "browser-session.txt");
+                    sessionFileName);
 
             if (!Cef.IsInitialized.GetValueOrDefault())
             {
@@ -154,14 +185,6 @@ public class ChromiumBrowser : IDisposable
 
             audioHandler =
                 new FarmNetAudioHandler();
-
-            audioPlayer =
-                new FarmNetAudioPlayer();
-
-            musicDucker =
-                new FarmNetMusicDucker();
-
-            musicDucker.Initialize();
 
             /*
              * ----------------------------------------
@@ -432,53 +455,20 @@ public class ChromiumBrowser : IDisposable
     public void ProcessAudio()
     {
         if (audioHandler == null ||
-            audioPlayer == null ||
-            musicDucker == null)
+            audioManager == null)
         {
             return;
         }
 
-        bool browserAudioActive =
-            audioHandler.AudioStreamActive;
+        audioManager.ProcessAudio(audioHandler);
+    }
 
-        musicDucker.SetBrowserAudioActive(
-            browserAudioActive);
-
-        musicDucker.Update(
-            1f / 60f);
-
-        if (!audioHandler.AudioStreamActive &&
-            audioHandler.QueuedPacketCount == 0)
-        {
+    public void DeactivateAudio()
+    {
+        if (audioManager == null)
             return;
-        }
 
-        if (!audioPlayer.IsPlaying)
-        {
-            audioPlayer.Start(
-                audioHandler.SampleRate,
-                audioHandler.Channels);
-        }
-
-        int packetsProcessed =
-            0;
-
-        while (
-            audioPlayer.BufferedSeconds < 0.5 &&
-            audioHandler.TryDequeue(
-                out byte[]? audioData))
-        {
-            if (audioData == null)
-                continue;
-
-            audioPlayer.AddAudio(
-                audioData);
-
-            packetsProcessed++;
-
-            if (packetsProcessed >= 20)
-                break;
-        }
+        audioManager.Deactivate(audioHandler);
     }
 
     /*
@@ -568,12 +558,6 @@ public class ChromiumBrowser : IDisposable
          */
         SaveCurrentUrl();
 
-        /*
-         * Restore Stardew's music before
-         * destroying the browser.
-         */
-        musicDucker?.Restore();
-
         if (browser != null)
         {
             browser.BrowserInitialized -=
@@ -602,19 +586,22 @@ public class ChromiumBrowser : IDisposable
 
         audioHandler?.ClearAudio();
 
-        audioPlayer?.Dispose();
+        if (ownsAudioManager)
+        {
+            audioManager?.Dispose();
+        }
 
-        audioPlayer =
+        audioManager =
             null;
 
         audioHandler =
-            null;
-
-        musicDucker =
             null;
 
         FrameReady =
             null;
     }
 }
+
+
+
 

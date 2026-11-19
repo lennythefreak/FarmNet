@@ -1,4 +1,4 @@
-
+﻿
 using CefSharp;
 using Microsoft.VisualBasic.Devices;
 using Microsoft.Xna.Framework;
@@ -8,22 +8,37 @@ using StardewValley;
 using StardewValley.Menus;
 
 using System;
+using System.Collections.Generic;
 using System.Windows.Forms;
 
 namespace FarmNet;
 
 public class FarmNetMenu : IClickableMenu
 {
-    private readonly ChromiumBrowser chromiumBrowser;
-    private readonly FarmNetKeyboardSubscriber keyboardSubscriber;
+    private readonly FarmNetBrowserAudioManager audioManager;
 
-    private Texture2D? browserTexture;
-    private byte[]? latestFrame;
+    private readonly List<FarmNetBrowserTab> tabs = new();
 
-    private int browserWidth;
-    private int browserHeight;
+    private int selectedTabIndex;
+    private int nextTabId = 1;
 
-    private bool frameReady;
+    private FarmNetBrowserTab ActiveTab =>
+        tabs[selectedTabIndex];
+
+    private ChromiumBrowser chromiumBrowser =>
+        ActiveTab.Browser;
+
+    private FarmNetKeyboardSubscriber keyboardSubscriber =>
+        ActiveTab.KeyboardSubscriber;
+
+    private Texture2D? browserTexture =>
+        ActiveTab.Texture;
+
+    private int browserWidth =>
+        ActiveTab.FrameWidth;
+
+    private int browserHeight =>
+        ActiveTab.FrameHeight;
 
     private Rectangle browserArea;
 
@@ -41,6 +56,10 @@ public class FarmNetMenu : IClickableMenu
     private Rectangle saveBookmarkButton;
     private Rectangle listBookmarksButton;
     private Rectangle addressBar;
+
+    private readonly List<Rectangle> tabBounds = new();
+    private readonly List<Rectangle> tabCloseBounds = new();
+    private Rectangle newTabButton;
 
     private readonly FarmNetBookmarks bookmarks;
 
@@ -96,92 +115,134 @@ public class FarmNetMenu : IClickableMenu
         bookmarks =
             new FarmNetBookmarks();
 
-        chromiumBrowser =
-            new ChromiumBrowser();
+        audioManager =
+            new FarmNetBrowserAudioManager();
 
-        keyboardSubscriber =
-            new FarmNetKeyboardSubscriber(
-                chromiumBrowser);
+        AddTab();
+    }
 
-        keyboardSubscriber.AddressSubmitted +=
-            OnAddressSubmitted;
+    // =========================================================
+    // TAB MANAGEMENT
+    // =========================================================
+
+    private void AddTab()
+    {
+        if (tabs.Count > 0)
+        {
+            ActiveTab.DeactivateAudio();
+            ActiveTab.KeyboardSubscriber.EndAddressBar();
+        }
+
+        string sessionFileName =
+            tabs.Count == 0
+                ? "browser-session.txt"
+                : $"browser-session-tab-{nextTabId++}.txt";
+
+        FarmNetBrowserTab tab =
+            new FarmNetBrowserTab(
+                audioManager,
+                OnAddressSubmitted,
+                sessionFileName);
+
+        tabs.Add(tab);
+
+        selectedTabIndex =
+            tabs.Count - 1;
 
         Game1.keyboardDispatcher.Subscriber =
-            keyboardSubscriber;
+            tab.KeyboardSubscriber;
 
-        chromiumBrowser.FrameReady +=
-            OnBrowserFrame;
+        addressBarFocused = false;
+        bookmarkPanelOpen = false;
+
+        addressText =
+            string.IsNullOrWhiteSpace(tab.CurrentUrl)
+                ? string.Empty
+                : tab.CurrentUrl;
     }
 
-    // =========================================================
-    // BROWSER FRAME
-    // =========================================================
-
-    private void OnBrowserFrame(
-        byte[] pixels,
-        int width,
-        int height)
+    private void SwitchTab(int index)
     {
-        latestFrame = pixels;
-
-        browserWidth = width;
-        browserHeight = height;
-
-        frameReady = true;
-    }
-
-    private void UpdateBrowserTexture()
-    {
-        if (!frameReady ||
-            latestFrame == null)
+        if (index < 0 ||
+            index >= tabs.Count ||
+            index == selectedTabIndex)
         {
             return;
         }
 
-        frameReady = false;
+        ActiveTab.DeactivateAudio();
+        ActiveTab.KeyboardSubscriber.EndAddressBar();
 
-        if (browserTexture == null ||
-            browserTexture.Width != browserWidth ||
-            browserTexture.Height != browserHeight)
+        addressBarFocused = false;
+        chromiumLeftMouseDown = false;
+        bookmarkPanelOpen = false;
+
+        selectedTabIndex = index;
+
+        Game1.keyboardDispatcher.Subscriber =
+            ActiveTab.KeyboardSubscriber;
+
+        addressText =
+            ActiveTab.CurrentUrl ?? string.Empty;
+
+        UpdateAddressBar();
+    }
+
+    private void CloseTab(int index)
+    {
+        if (index < 0 || index >= tabs.Count)
+            return;
+
+        bool closingActiveTab =
+            index == selectedTabIndex;
+
+        FarmNetBrowserTab closingTab =
+            tabs[index];
+
+        if (closingActiveTab)
         {
-            browserTexture?.Dispose();
-
-            browserTexture =
-                new Texture2D(
-                    Game1.graphics.GraphicsDevice,
-                    browserWidth,
-                    browserHeight,
-                    false,
-                    SurfaceFormat.Color);
+            closingTab.DeactivateAudio();
+            closingTab.KeyboardSubscriber.EndAddressBar();
+            addressBarFocused = false;
+            chromiumLeftMouseDown = false;
         }
 
-        /*
-         * CefSharp gives us BGRA.
-         *
-         * MonoGame expects RGBA.
-         */
-        byte[] correctedPixels =
-            new byte[latestFrame.Length];
-
-        for (int i = 0;
-             i < latestFrame.Length;
-             i += 4)
+        if (Game1.keyboardDispatcher.Subscriber ==
+            closingTab.KeyboardSubscriber)
         {
-            correctedPixels[i] =
-                latestFrame[i + 2];
-
-            correctedPixels[i + 1] =
-                latestFrame[i + 1];
-
-            correctedPixels[i + 2] =
-                latestFrame[i];
-
-            correctedPixels[i + 3] =
-                latestFrame[i + 3];
+            Game1.keyboardDispatcher.Subscriber = null;
         }
 
-        browserTexture.SetData(
-            correctedPixels);
+        closingTab.Dispose();
+        tabs.RemoveAt(index);
+
+        if (tabs.Count == 0)
+        {
+            selectedTabIndex = 0;
+            AddTab();
+            return;
+        }
+
+        if (index < selectedTabIndex)
+        {
+            selectedTabIndex--;
+        }
+        else if (closingActiveTab)
+        {
+            selectedTabIndex =
+                Math.Min(index, tabs.Count - 1);
+        }
+
+        if (closingActiveTab)
+        {
+            Game1.keyboardDispatcher.Subscriber =
+                ActiveTab.KeyboardSubscriber;
+
+            addressText =
+                ActiveTab.CurrentUrl ?? string.Empty;
+
+            UpdateAddressBar();
+        }
     }
 
     // =========================================================
@@ -191,9 +252,10 @@ public class FarmNetMenu : IClickableMenu
     public override void update(
     GameTime time)
     {
-        UpdateBrowserTexture();
+        ActiveTab.UpdateTexture(
+            Game1.graphics.GraphicsDevice);
 
-        chromiumBrowser.ProcessAudio();
+        ActiveTab.ProcessAudio();
 
         SendMouseMove();
 
@@ -527,11 +589,160 @@ public class FarmNetMenu : IClickableMenu
         }
 
         // -----------------------------------------------------
+        // TAB STRIP
+        // -----------------------------------------------------
+
+        int tabStripY =
+            addressBar.Bottom + 8;
+
+        int tabStripHeight = 32;
+        int tabStripLeft = windowX + 20;
+        int tabStripRight = closeButton.Left - 20;
+        int addButtonWidth = 36;
+
+        newTabButton =
+            new Rectangle(
+                tabStripRight - addButtonWidth,
+                tabStripY,
+                addButtonWidth,
+                tabStripHeight);
+
+        b.Draw(
+            Game1.staminaRect,
+            new Rectangle(
+                tabStripLeft,
+                tabStripY,
+                tabStripRight - tabStripLeft,
+                tabStripHeight),
+            darkTheme
+                ? new Color(30, 30, 33)
+                : new Color(218, 202, 172));
+
+        tabBounds.Clear();
+        tabCloseBounds.Clear();
+
+        int tabAreaWidth =
+            newTabButton.Left - tabStripLeft - 6;
+
+        int tabWidth =
+            tabs.Count > 0
+                ? Math.Min(
+                    190,
+                    Math.Max(
+                        72,
+                        tabAreaWidth / tabs.Count))
+                : 0;
+
+        int tabX = tabStripLeft;
+
+        for (int i = 0; i < tabs.Count; i++)
+        {
+            Rectangle tabRectangle =
+                new Rectangle(
+                    tabX,
+                    tabStripY,
+                    tabWidth,
+                    tabStripHeight);
+
+            Rectangle tabClose =
+                new Rectangle(
+                    tabRectangle.Right - 26,
+                    tabStripY + 4,
+                    22,
+                    24);
+
+            tabBounds.Add(tabRectangle);
+            tabCloseBounds.Add(tabClose);
+
+            bool selected =
+                i == selectedTabIndex;
+
+            b.Draw(
+                Game1.staminaRect,
+                tabRectangle,
+                selected
+                    ? darkTheme
+                        ? new Color(65, 65, 70)
+                        : new Color(247, 235, 204)
+                    : darkTheme
+                        ? new Color(42, 42, 45)
+                        : new Color(195, 177, 145));
+
+            string tabLabel =
+                string.IsNullOrWhiteSpace(tabs[i].CurrentUrl)
+                    ? "New Tab"
+                    : tabs[i].CurrentUrl;
+
+            if (Uri.TryCreate(
+                    tabLabel,
+                    UriKind.Absolute,
+                    out Uri? tabUri))
+            {
+                if (!string.IsNullOrWhiteSpace(tabUri.Host))
+                    tabLabel = tabUri.Host;
+            }
+
+            int labelWidth =
+                tabRectangle.Width - 38;
+
+            while (
+                tabLabel.Length > 0 &&
+                Game1.smallFont.MeasureString(tabLabel).X > labelWidth)
+            {
+                tabLabel = tabLabel.Substring(
+                    0,
+                    tabLabel.Length - 1);
+            }
+
+            if (tabs[i].CurrentUrl != null &&
+                tabLabel.Length > 0 &&
+                Game1.smallFont.MeasureString(tabLabel).X > labelWidth)
+            {
+                tabLabel += "...";
+            }
+
+            b.DrawString(
+                Game1.smallFont,
+                tabLabel,
+                new Vector2(
+                    tabRectangle.X + 8,
+                    tabRectangle.Y + 7),
+                darkTheme ? Color.White : new Color(74, 57, 40));
+
+            b.DrawString(
+                Game1.smallFont,
+                "X",
+                new Vector2(
+                    tabClose.X + 6,
+                    tabClose.Y + 3),
+                darkTheme
+                    ? new Color(220, 220, 220)
+                    : new Color(100, 65, 50));
+
+            tabX += tabWidth + 4;
+        }
+
+        b.Draw(
+            Game1.staminaRect,
+            newTabButton,
+            darkTheme
+                ? new Color(55, 55, 59)
+                : new Color(190, 170, 137));
+
+        b.DrawString(
+            Game1.smallFont,
+            "+",
+            new Vector2(
+                newTabButton.X + 12,
+                newTabButton.Y + 5),
+            darkTheme ? Color.White : new Color(74, 57, 40));
+
+        // -----------------------------------------------------
         // NAVIGATION ROW
         // -----------------------------------------------------
 
         int navY =
-            addressBar.Bottom + 8;
+            tabStripY + tabStripHeight + 8;
 
         int navButtonWidth =
             58;
@@ -1641,6 +1852,31 @@ public class FarmNetMenu : IClickableMenu
             return;
         }
 
+        // NEW TAB
+
+        if (newTabButton.Contains(x, y))
+        {
+            AddTab();
+            return;
+        }
+
+        // EXISTING TABS
+
+        for (int i = 0; i < tabBounds.Count; i++)
+        {
+            if (!tabBounds[i].Contains(x, y))
+                continue;
+
+            if (tabCloseBounds[i].Contains(x, y))
+            {
+                CloseTab(i);
+                return;
+            }
+
+            SwitchTab(i);
+            return;
+        }
+
         // BACK
 
         if (backButton.Contains(
@@ -1956,46 +2192,42 @@ public class FarmNetMenu : IClickableMenu
     protected override void cleanupBeforeExit()
     {
         /*
-         * Remove keyboard subscriber.
+         * Remove the active FarmNet keyboard subscriber.
          */
 
-        if (Game1.keyboardDispatcher.Subscriber ==
-            keyboardSubscriber)
+        foreach (FarmNetBrowserTab tab in tabs)
         {
-            Game1.keyboardDispatcher.Subscriber =
-                null;
+            if (Game1.keyboardDispatcher.Subscriber ==
+                tab.KeyboardSubscriber)
+            {
+                Game1.keyboardDispatcher.Subscriber =
+                    null;
+
+                break;
+            }
         }
 
         /*
-         * Remove FarmNet events.
+         * Dispose every browser before disposing
+         * the shared audio manager.
          */
 
-        keyboardSubscriber.AddressSubmitted -=
-            OnAddressSubmitted;
+        foreach (FarmNetBrowserTab tab in tabs)
+        {
+            tab.Dispose();
+        }
 
-        chromiumBrowser.FrameReady -=
-            OnBrowserFrame;
-
-        /*
-         * Dispose Chromium.
-         */
-
-        chromiumBrowser.Dispose();
-
-        /*
-         * Dispose browser texture.
-         */
-
-        browserTexture?.Dispose();
-
-        browserTexture =
-            null;
+        tabs.Clear();
 
         chromiumLeftMouseDown =
             false;
 
+        audioManager.Dispose();
+
         base.cleanupBeforeExit();
     }
 }
+
+
 
 
