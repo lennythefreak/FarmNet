@@ -50,7 +50,8 @@ public class FarmNetBrowserTab : IDisposable
     public FarmNetBrowserTab(
         FarmNetBrowserAudioManager audioManager,
         Action<string> addressSubmitted,
-        string sessionFileName = "browser-session.txt")
+        string sessionFileName = "browser-session.txt",
+        Action<string>? popupRequested = null)
     {
         addressSubmittedHandler =
             addressSubmitted ??
@@ -60,7 +61,8 @@ public class FarmNetBrowserTab : IDisposable
         Browser =
             new ChromiumBrowser(
                 audioManager,
-                sessionFileName);
+                sessionFileName,
+                popupRequested);
 
         KeyboardSubscriber =
             new FarmNetKeyboardSubscriber(
@@ -218,6 +220,7 @@ public class FarmNetBrowserTab : IDisposable
         }
     }
 }
+
 
 
 

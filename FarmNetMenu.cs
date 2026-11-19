@@ -9,6 +9,7 @@ using StardewValley.Menus;
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Windows.Forms;
 
 namespace FarmNet;
@@ -21,6 +22,8 @@ public class FarmNetMenu : IClickableMenu
 
     private int selectedTabIndex;
     private int nextTabId = 1;
+
+    private readonly ConcurrentQueue<string> pendingPopupUrls = new();
 
     private FarmNetBrowserTab ActiveTab =>
         tabs[selectedTabIndex];
@@ -125,6 +128,29 @@ public class FarmNetMenu : IClickableMenu
     // TAB MANAGEMENT
     // =========================================================
 
+    private void OnPopupRequested(string url)
+    {
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            pendingPopupUrls.Enqueue(url);
+        }
+    }
+
+    private void ProcessPendingPopups()
+    {
+        while (pendingPopupUrls.TryDequeue(out string? url))
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                continue;
+            }
+
+            AddTab();
+
+            addressText = url;
+            chromiumBrowser.Navigate(url);
+        }
+    }
     private void AddTab()
     {
         if (tabs.Count > 0)
@@ -142,7 +168,8 @@ public class FarmNetMenu : IClickableMenu
             new FarmNetBrowserTab(
                 audioManager,
                 OnAddressSubmitted,
-                sessionFileName);
+                sessionFileName,
+                OnPopupRequested);
 
         tabs.Add(tab);
 
@@ -252,6 +279,8 @@ public class FarmNetMenu : IClickableMenu
     public override void update(
     GameTime time)
     {
+        ProcessPendingPopups();
+
         ActiveTab.UpdateTexture(
             Game1.graphics.GraphicsDevice);
 
@@ -2227,6 +2256,7 @@ public class FarmNetMenu : IClickableMenu
         base.cleanupBeforeExit();
     }
 }
+
 
 
 

@@ -13,10 +13,15 @@ public class ChromiumBrowser : IDisposable
     private ChromiumWebBrowser? browser;
 
     private FarmNetAudioHandler? audioHandler;
+    private readonly Action<string>? popupRequested;
+    private FarmNetPopupHandler? popupHandler;
 
     private FarmNetBrowserAudioManager? audioManager;
 
     private bool ownsAudioManager;
+
+    private readonly object navigationLock = new();
+    private string? pendingNavigationUrl;
 
     private string sessionFilePath = string.Empty;
 
@@ -98,7 +103,8 @@ public class ChromiumBrowser : IDisposable
 
     public ChromiumBrowser(
         FarmNetBrowserAudioManager sharedAudioManager,
-        string sessionFileName = "browser-session.txt")
+        string sessionFileName = "browser-session.txt",
+        Action<string>? popupRequested = null)
     {
         this.sessionFileName =
             string.IsNullOrWhiteSpace(sessionFileName)
@@ -112,6 +118,9 @@ public class ChromiumBrowser : IDisposable
 
         ownsAudioManager =
             false;
+
+        this.popupRequested =
+            popupRequested;
 
         Initialize();
     }
@@ -197,6 +206,15 @@ public class ChromiumBrowser : IDisposable
 
             browser =
                 new ChromiumWebBrowser(startingUrl);
+
+            if (popupRequested != null)
+            {
+                popupHandler =
+                    new FarmNetPopupHandler(popupRequested);
+
+                browser.LifeSpanHandler =
+                    popupHandler;
+            }
 
             browser.AudioHandler =
                 audioHandler;
@@ -328,9 +346,31 @@ public class ChromiumBrowser : IDisposable
         Console.WriteLine(
             "FarmNet: Chromium browser initialized.");
 
-        browser?
+        string? pendingUrl;
+
+        ChromiumWebBrowser? initializedBrowser;
+
+        lock (navigationLock)
+        {
+            initializedBrowser = browser;
+
+            pendingUrl =
+                pendingNavigationUrl;
+
+            pendingNavigationUrl = null;
+        }
+
+        initializedBrowser?
             .GetBrowserHost()?
             .WasResized();
+
+        if (!string.IsNullOrWhiteSpace(pendingUrl))
+        {
+            Console.WriteLine(
+                $"FarmNet: Loading queued navigation: {pendingUrl}");
+
+            initializedBrowser?.Load(pendingUrl);
+        }
     }
 
     private void OnPaint(
@@ -480,12 +520,6 @@ public class ChromiumBrowser : IDisposable
     public void Navigate(
         string url)
     {
-        if (!IsReady ||
-            browser == null)
-        {
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(url))
             return;
 
@@ -503,7 +537,23 @@ public class ChromiumBrowser : IDisposable
                 "https://" + url;
         }
 
-        browser.Load(url);
+        ChromiumWebBrowser? browserToLoad;
+
+        lock (navigationLock)
+        {
+            if (browser == null)
+                return;
+
+            if (!browser.IsBrowserInitialized)
+            {
+                pendingNavigationUrl = url;
+                return;
+            }
+
+            browserToLoad = browser;
+        }
+
+        browserToLoad.Load(url);
     }
 
     public void GoBack()
@@ -578,6 +628,9 @@ public class ChromiumBrowser : IDisposable
             browser.AudioHandler =
                 null;
 
+            browser.LifeSpanHandler = null;
+            popupHandler = null;
+
             browser.Dispose();
 
             browser =
@@ -601,6 +654,8 @@ public class ChromiumBrowser : IDisposable
             null;
     }
 }
+
+
 
 
 
